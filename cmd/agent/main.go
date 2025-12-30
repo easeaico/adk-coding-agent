@@ -2,18 +2,23 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
+	"text/template"
 
-	"github.com/easeaico/adk-memory-agent/internal/llm"
 	"github.com/easeaico/adk-memory-agent/internal/memory"
-	"github.com/easeaico/adk-memory-agent/internal/service"
+	"github.com/easeaico/adk-memory-agent/internal/tools"
+	"google.golang.org/adk/agent"
+	"google.golang.org/adk/agent/llmagent"
+	"google.golang.org/adk/cmd/launcher"
+	"google.golang.org/adk/cmd/launcher/full"
+	"google.golang.org/adk/model/gemini"
+	"google.golang.org/genai"
 )
 
 // Config holds the application configuration.
@@ -21,6 +26,20 @@ type Config struct {
 	DatabaseURL string
 	APIKey      string
 	WorkDir     string
+}
+
+// Embedder wraps the genai client for embedding generation.
+type Embedder struct {
+	client *genai.Client
+}
+
+// Embed generates an embedding for the given text.
+func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
+	resp, err := e.client.Models.EmbedContent(ctx, "text-embedding-004", genai.Text(text), nil)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Embeddings[0].Values, nil
 }
 
 func main() {
@@ -41,14 +60,20 @@ func main() {
 	}()
 
 	// Initialize components
-	agent, cleanup, err := initializeAgent(ctx, cfg)
+	llmAgent, cleanup, err := initializeAgent(ctx, cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize agent: %v", err)
 	}
 	defer cleanup()
 
-	// Run interactive loop
-	runInteractiveLoop(ctx, agent)
+	// Run interactive loop using adk-go runtime (launcher)
+	config := &launcher.Config{
+		AgentLoader: agent.NewSingleLoader(llmAgent),
+	}
+	l := full.NewLauncher()
+	if err := l.Execute(ctx, config, os.Args[1:]); err != nil {
+		log.Fatalf("Failed to run agent: %v\n\n%s", err, l.CommandLineSyntax())
+	}
 }
 
 // loadConfig loads configuration from environment variables.
@@ -76,115 +101,119 @@ func loadConfig() Config {
 }
 
 // initializeAgent creates and initializes all components.
-func initializeAgent(ctx context.Context, cfg Config) (*service.Agent, func(), error) {
+func initializeAgent(ctx context.Context, cfg Config) (agent.Agent, func(), error) {
 	// Connect to database
 	store, err := memory.NewPostgresStore(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	// Create LLM client
-	llmClient, err := llm.NewClient(ctx, cfg.APIKey)
+	// Create GenAI client
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  cfg.APIKey,
+		Backend: genai.BackendGeminiAPI,
+	})
 	if err != nil {
 		store.Close()
-		return nil, nil, fmt.Errorf("failed to create LLM client: %w", err)
+		return nil, nil, fmt.Errorf("failed to create GenAI client: %w", err)
 	}
 
-	// Create agent
-	agent := service.NewAgent(llmClient, store, cfg.WorkDir)
+	// Create embedder
+	embedder := &Embedder{client: client}
 
-	// Start session
-	if err := agent.StartSession(ctx); err != nil {
-		llmClient.Close()
+	// Load project rules for system prompt
+	rules, err := store.GetProjectRules(ctx)
+	if err != nil {
+		log.Printf("Warning: failed to load project rules: %v", err)
+	}
+
+	// Build system instruction
+	systemPrompt := buildSystemPrompt(rules)
+
+	// Create tools
+	agentTools, err := tools.BuildTools(tools.ToolsConfig{
+		Store:    store,
+		Embedder: embedder,
+		WorkDir:  cfg.WorkDir,
+	})
+	if err != nil {
 		store.Close()
-		return nil, nil, fmt.Errorf("failed to start session: %w", err)
+		return nil, nil, fmt.Errorf("failed to build tools: %w", err)
+	}
+
+	// Create LLM model using ADK's gemini wrapper
+	llmModel, err := gemini.NewModel(ctx, "gemini-2.0-flash", &genai.ClientConfig{
+		APIKey:  cfg.APIKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		store.Close()
+		return nil, nil, fmt.Errorf("failed to create LLM model: %w", err)
+	}
+
+	// Create LLM agent
+	llmAgent, err := llmagent.New(llmagent.Config{
+		Name:        "legacy_code_hunter",
+		Description: "帮助开发者理解、调试和修复代码问题的智能助手",
+		Model:       llmModel,
+		Instruction: systemPrompt,
+		Tools:       agentTools,
+	})
+	if err != nil {
+		store.Close()
+		return nil, nil, fmt.Errorf("failed to create agent: %w", err)
 	}
 
 	// Create cleanup function
 	cleanup := func() {
-		agent.Close(ctx, true) // Consolidate memory on close
-		llmClient.Close()
 		store.Close()
 	}
 
-	return agent, cleanup, nil
+	log.Printf("Agent initialized with %d project rules loaded", len(rules))
+	return llmAgent, cleanup, nil
 }
 
-// runInteractiveLoop runs the interactive chat loop.
-func runInteractiveLoop(ctx context.Context, agent *service.Agent) {
-	fmt.Println("========================================")
-	fmt.Println("   遗留代码猎手 (Legacy Code Hunter)")
-	fmt.Println("   基于 ADK 的分层记忆智能体")
-	fmt.Println("========================================")
-	fmt.Println()
-	fmt.Println("输入你的问题，我会帮你分析代码问题。")
-	fmt.Println("输入 'exit' 或按 Ctrl+C 退出。")
-	fmt.Println()
+var systemPromptTmpl = template.Must(template.New("systemPrompt").Parse(`
+你是一个资深的 Go 工程师，名为"遗留代码猎手"(Legacy Code Hunter)。
+你的任务是帮助开发者理解、调试和修复代码问题。
 
-	scanner := bufio.NewScanner(os.Stdin)
+你具备以下能力：
+1. 可以读取文件内容来理解代码
+2. 可以搜索历史问题库来查找相似问题的解决方案
+3. 可以保存新的问题解决经验供将来参考
 
-	for {
-		fmt.Print("你: ")
+{{- if .HasRules }}
 
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
+你必须严格遵守以下项目规范：
+{{- range $idx, $rule := .Rules }}
+{{$add := inc $idx}}{{printf "%d. %s" $add $rule}}
+{{end}}
+{{end}}
 
-		if !scanner.Scan() {
-			break
-		}
+在回答问题时：
+- 首先考虑是否需要搜索历史问题库
+- 如果需要查看代码，使用 read_file_content 工具
+- 解决问题后，使用 save_experience 工具保存经验
+- 始终提供清晰、可操作的建议
+`))
 
-		input := strings.TrimSpace(scanner.Text())
-		if input == "" {
-			continue
-		}
+// inc is a small helper for incrementing index
+func inc(i int) int { return i + 1 }
 
-		if strings.ToLower(input) == "exit" {
-			fmt.Println("再见！")
-			return
-		}
-
-		// Special commands
-		if strings.HasPrefix(input, "/") {
-			handleCommand(input)
-			continue
-		}
-
-		// Send to agent
-		response, err := agent.Chat(ctx, input)
-		if err != nil {
-			fmt.Printf("错误: %v\n", err)
-			continue
-		}
-
-		fmt.Printf("\n助手: %s\n\n", response)
+// buildSystemPrompt constructs the system prompt with project rules.
+func buildSystemPrompt(rules []string) string {
+	data := struct {
+		Rules    []string
+		HasRules bool
+	}{
+		Rules:    rules,
+		HasRules: len(rules) > 0,
 	}
 
-	if err := scanner.Err(); err != nil {
-		log.Printf("Scanner error: %v", err)
-	}
-}
+	// Add funcMap for inc
+	tmpl := systemPromptTmpl.Funcs(template.FuncMap{"inc": inc})
 
-// handleCommand handles special commands.
-func handleCommand(cmd string) {
-	switch strings.ToLower(cmd) {
-	case "/help":
-		fmt.Print(`
-可用命令:
-  /help    - 显示帮助信息
-  /clear   - 清除会话历史
-  exit     - 退出程序
-
-功能说明:
-  - 我可以读取和分析代码文件
-  - 我可以搜索历史问题库寻找类似问题
-  - 解决问题后，经验会自动保存
-`)
-	case "/clear":
-		fmt.Println("会话历史已清除。")
-	default:
-		fmt.Printf("未知命令: %s\n", cmd)
-	}
+	var buf bytes.Buffer
+	_ = tmpl.Execute(&buf, data)
+	return buf.String()
 }
