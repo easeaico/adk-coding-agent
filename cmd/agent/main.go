@@ -60,7 +60,7 @@ func main() {
 	}()
 
 	// Initialize components
-	llmAgent, cleanup, err := initializeAgent(ctx, cfg)
+	llmAgent, memoryService, cleanup, err := initializeAgent(ctx, cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize agent: %v", err)
 	}
@@ -68,7 +68,8 @@ func main() {
 
 	// Run interactive loop using adk-go runtime (launcher)
 	config := &launcher.Config{
-		AgentLoader: agent.NewSingleLoader(llmAgent),
+		MemoryService: memoryService,
+		AgentLoader:   agent.NewSingleLoader(llmAgent),
 	}
 	l := full.NewLauncher()
 	if err := l.Execute(ctx, config, os.Args[1:]); err != nil {
@@ -101,24 +102,27 @@ func loadConfig() Config {
 }
 
 // initializeAgent creates and initializes all components.
-func initializeAgent(ctx context.Context, cfg Config) (agent.Agent, func(), error) {
+func initializeAgent(ctx context.Context, cfg Config) (agent.Agent, *memory.Service, func(), error) {
 	// Create GenAI client
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  cfg.APIKey,
 		Backend: genai.BackendGeminiAPI,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create GenAI client: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create GenAI client: %w", err)
 	}
 
 	// Create embedder
 	embedder := &Embedder{client: client}
 
 	// Connect to database with embedder for memory.Service support
-	store, err := memory.NewPostgresStore(ctx, cfg.DatabaseURL, embedder)
+	store, err := memory.NewPostgresStore(ctx, cfg.DatabaseURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to connect to database: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
+
+	// Create memory service
+	memoryService := memory.NewService(store, embedder)
 
 	// Load project rules for system prompt
 	rules, err := store.GetProjectRules(ctx)
@@ -137,7 +141,7 @@ func initializeAgent(ctx context.Context, cfg Config) (agent.Agent, func(), erro
 	})
 	if err != nil {
 		store.Close()
-		return nil, nil, fmt.Errorf("failed to build tools: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to build tools: %w", err)
 	}
 
 	// Create LLM model using ADK's gemini wrapper
@@ -147,7 +151,7 @@ func initializeAgent(ctx context.Context, cfg Config) (agent.Agent, func(), erro
 	})
 	if err != nil {
 		store.Close()
-		return nil, nil, fmt.Errorf("failed to create LLM model: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create LLM model: %w", err)
 	}
 
 	// Create LLM agent
@@ -160,7 +164,7 @@ func initializeAgent(ctx context.Context, cfg Config) (agent.Agent, func(), erro
 	})
 	if err != nil {
 		store.Close()
-		return nil, nil, fmt.Errorf("failed to create agent: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create agent: %w", err)
 	}
 
 	// Create cleanup function
@@ -169,7 +173,7 @@ func initializeAgent(ctx context.Context, cfg Config) (agent.Agent, func(), erro
 	}
 
 	log.Printf("Agent initialized with %d project rules loaded", len(rules))
-	return llmAgent, cleanup, nil
+	return llmAgent, memoryService, cleanup, nil
 }
 
 var systemPromptTmpl = template.Must(template.New("systemPrompt").Parse(`
