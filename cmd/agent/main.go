@@ -102,24 +102,23 @@ func loadConfig() Config {
 
 // initializeAgent creates and initializes all components.
 func initializeAgent(ctx context.Context, cfg Config) (agent.Agent, func(), error) {
-	// Connect to database
-	store, err := memory.NewPostgresStore(ctx, cfg.DatabaseURL)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to connect to database: %w", err)
-	}
-
 	// Create GenAI client
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  cfg.APIKey,
 		Backend: genai.BackendGeminiAPI,
 	})
 	if err != nil {
-		store.Close()
 		return nil, nil, fmt.Errorf("failed to create GenAI client: %w", err)
 	}
 
 	// Create embedder
 	embedder := &Embedder{client: client}
+
+	// Connect to database with embedder for memory.Service support
+	store, err := memory.NewPostgresStore(ctx, cfg.DatabaseURL, embedder)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
 
 	// Load project rules for system prompt
 	rules, err := store.GetProjectRules(ctx)
