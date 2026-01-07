@@ -16,3 +16,4 @@
 
 # Agent specific
 .env
+bin/

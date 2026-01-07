@@ -2,55 +2,33 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
-	"text/template"
 
+	internal "github.com/easeaico/adk-memory-agent/internal/agent"
+	"github.com/easeaico/adk-memory-agent/internal/config"
 	"github.com/easeaico/adk-memory-agent/internal/memory"
-	"github.com/easeaico/adk-memory-agent/internal/tools"
 	"google.golang.org/adk/agent"
-	"google.golang.org/adk/agent/llmagent"
 	"google.golang.org/adk/cmd/launcher"
 	"google.golang.org/adk/cmd/launcher/full"
-	"google.golang.org/adk/model/gemini"
-	"google.golang.org/genai"
 )
 
-// Config holds the application configuration.
-type Config struct {
-	DatabaseURL string
-	APIKey      string
-	WorkDir     string
-}
-
-// Embedder wraps the genai client for embedding generation.
-type Embedder struct {
-	client *genai.Client
-}
-
-// Embed generates an embedding for the given text.
-func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
-	resp, err := e.client.Models.EmbedContent(ctx, "text-embedding-004", genai.Text(text), nil)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Embeddings[0].Values, nil
-}
-
+// main is the entry point for the Legacy Code Hunter agent application.
+// It initializes all components (database, memory service, agent) and starts
+// the interactive agent runtime using the ADK launcher.
 func main() {
-	// Load configuration from environment
-	cfg := loadConfig()
+	// Load configuration from environment variables
+	cfg := config.Load()
 
-	// Create context with cancellation
+	// Create context with cancellation support for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Handle graceful shutdown
+	// Set up signal handling for graceful shutdown (SIGINT, SIGTERM)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -59,164 +37,40 @@ func main() {
 		cancel()
 	}()
 
-	// Initialize components
-	llmAgent, memoryService, cleanup, err := initializeAgent(ctx, cfg)
+	// Initialize database connection pool
+	// The store provides access to both semantic memory (project rules) and
+	// episodic memory (past experiences) stored in PostgreSQL with pgvector.
+	store, err := memory.NewPostgresStore(ctx, cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("failed to connect to database: %v", err)
+	}
+	defer store.Close()
+
+	// Create memory service that implements ADK's memory.Service interface
+	// This service handles vector similarity search and session ingestion
+	// for long-term knowledge storage.
+	memoryService, err := memory.NewService(ctx, store, cfg)
+	if err != nil {
+		log.Fatalf("failed to create memory service: %v", err)
+	}
+
+	// Initialize the LLM agent with tools and system prompt
+	// The agent is configured with project rules and has access to tools
+	// for file operations and experience management.
+	llmAgent, err := internal.NewCodingAgent(ctx, store, cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize agent: %v", err)
 	}
-	defer cleanup()
 
-	// Run interactive loop using adk-go runtime (launcher)
-	config := &launcher.Config{
+	// Configure and start the ADK launcher
+	// The launcher provides the interactive runtime environment for the agent,
+	// handling command-line arguments and managing the agent lifecycle.
+	launcherConfig := &launcher.Config{
 		MemoryService: memoryService,
 		AgentLoader:   agent.NewSingleLoader(llmAgent),
 	}
 	l := full.NewLauncher()
-	if err := l.Execute(ctx, config, os.Args[1:]); err != nil {
+	if err := l.Execute(ctx, launcherConfig, os.Args[1:]); err != nil {
 		log.Fatalf("Failed to run agent: %v\n\n%s", err, l.CommandLineSyntax())
 	}
-}
-
-// loadConfig loads configuration from environment variables.
-func loadConfig() Config {
-	cfg := Config{
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		APIKey:      os.Getenv("GOOGLE_API_KEY"),
-		WorkDir:     os.Getenv("WORK_DIR"),
-	}
-
-	// Set defaults
-	if cfg.WorkDir == "" {
-		cfg.WorkDir, _ = os.Getwd()
-	}
-
-	// Validate required config
-	if cfg.APIKey == "" {
-		log.Fatal("GOOGLE_API_KEY environment variable is required")
-	}
-	if cfg.DatabaseURL == "" {
-		log.Fatal("DATABASE_URL environment variable is required (e.g., postgres://user:pass@localhost:5432/dbname)")
-	}
-
-	return cfg
-}
-
-// initializeAgent creates and initializes all components.
-func initializeAgent(ctx context.Context, cfg Config) (agent.Agent, *memory.Service, func(), error) {
-	// Create GenAI client
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  cfg.APIKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to create GenAI client: %w", err)
-	}
-
-	// Create embedder
-	embedder := &Embedder{client: client}
-
-	// Connect to database with embedder for memory.Service support
-	store, err := memory.NewPostgresStore(ctx, cfg.DatabaseURL)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to connect to database: %w", err)
-	}
-
-	// Create memory service
-	memoryService := memory.NewService(store, embedder)
-
-	// Load project rules for system prompt
-	rules, err := store.GetProjectRules(ctx)
-	if err != nil {
-		log.Printf("Warning: failed to load project rules: %v", err)
-	}
-
-	// Build system instruction
-	systemPrompt := buildSystemPrompt(rules)
-
-	// Create tools
-	agentTools, err := tools.BuildTools(tools.ToolsConfig{
-		Store:    store,
-		Embedder: embedder,
-		WorkDir:  cfg.WorkDir,
-	})
-	if err != nil {
-		store.Close()
-		return nil, nil, nil, fmt.Errorf("failed to build tools: %w", err)
-	}
-
-	// Create LLM model using ADK's gemini wrapper
-	llmModel, err := gemini.NewModel(ctx, "gemini-2.0-flash", &genai.ClientConfig{
-		APIKey:  cfg.APIKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		store.Close()
-		return nil, nil, nil, fmt.Errorf("failed to create LLM model: %w", err)
-	}
-
-	// Create LLM agent
-	llmAgent, err := llmagent.New(llmagent.Config{
-		Name:        "legacy_code_hunter",
-		Description: "帮助开发者理解、调试和修复代码问题的智能助手",
-		Model:       llmModel,
-		Instruction: systemPrompt,
-		Tools:       agentTools,
-	})
-	if err != nil {
-		store.Close()
-		return nil, nil, nil, fmt.Errorf("failed to create agent: %w", err)
-	}
-
-	// Create cleanup function
-	cleanup := func() {
-		store.Close()
-	}
-
-	log.Printf("Agent initialized with %d project rules loaded", len(rules))
-	return llmAgent, memoryService, cleanup, nil
-}
-
-var systemPromptTmpl = template.Must(template.New("systemPrompt").Parse(`
-你是一个资深的 Go 工程师，名为"遗留代码猎手"(Legacy Code Hunter)。
-你的任务是帮助开发者理解、调试和修复代码问题。
-
-你具备以下能力：
-1. 可以读取文件内容来理解代码
-2. 可以搜索历史问题库来查找相似问题的解决方案
-3. 可以保存新的问题解决经验供将来参考
-
-{{- if .HasRules }}
-
-你必须严格遵守以下项目规范：
-{{- range $idx, $rule := .Rules }}
-{{$add := inc $idx}}{{printf "%d. %s" $add $rule}}
-{{end}}
-{{end}}
-
-在回答问题时：
-- 首先考虑是否需要搜索历史问题库
-- 如果需要查看代码，使用 read_file_content 工具
-- 解决问题后，使用 save_experience 工具保存经验
-- 始终提供清晰、可操作的建议
-`))
-
-// inc is a small helper for incrementing index
-func inc(i int) int { return i + 1 }
-
-// buildSystemPrompt constructs the system prompt with project rules.
-func buildSystemPrompt(rules []string) string {
-	data := struct {
-		Rules    []string
-		HasRules bool
-	}{
-		Rules:    rules,
-		HasRules: len(rules) > 0,
-	}
-
-	// Add funcMap for inc
-	tmpl := systemPromptTmpl.Funcs(template.FuncMap{"inc": inc})
-
-	var buf bytes.Buffer
-	_ = tmpl.Execute(&buf, data)
-	return buf.String()
 }

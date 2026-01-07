@@ -24,23 +24,20 @@ type Store interface {
 	SaveExperience(ctx context.Context, pattern, cause, solution string, vector []float32) error
 
 	// Close releases any resources held by the store.
-	Close() error
+	Close()
 }
 
-// Embedder is an interface for generating text embeddings.
-// This is needed for the memory.Service Search method.
-type Embedder interface {
-	Embed(ctx context.Context, text string) ([]float32, error)
-}
-
-// PostgresStore implements both the Store interface and adk's memory.Service interface using PostgreSQL with pgvector.
+// PostgresStore implements the Store interface using PostgreSQL with pgvector extension.
+// It provides persistent storage for both semantic memory (project rules) and
+// episodic memory (past experiences with vector embeddings).
 type PostgresStore struct {
-	pool *pgxpool.Pool
+	pool *pgxpool.Pool // Connection pool for database operations
 }
 
 // NewPostgresStore creates a new PostgresStore connected to the given database URL.
 // The URL should be in the format: postgres://user:password@host:port/database
-// embedder is optional but required for memory.Service.Search to work properly.
+// It creates a connection pool and verifies the connection with a ping.
+// Returns an error if the connection cannot be established.
 func NewPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
@@ -88,8 +85,11 @@ func (s *PostgresStore) GetProjectRules(ctx context.Context) ([]string, error) {
 }
 
 // SearchSimilarIssues finds past experiences similar to the query vector using cosine similarity.
+// It uses PostgreSQL's pgvector extension to perform vector similarity search.
+// The results are ordered by similarity (most similar first) and limited to the specified count.
+// Returns an error if the database query fails.
 func (s *PostgresStore) SearchSimilarIssues(ctx context.Context, queryVector []float32, limit int) ([]Experience, error) {
-	// Convert to pgvector type
+	// Convert float32 slice to pgvector type for database query
 	vec := pgvector.NewVector(queryVector)
 
 	query := `
@@ -133,11 +133,16 @@ func (s *PostgresStore) SearchSimilarIssues(ctx context.Context, queryVector []f
 }
 
 // SaveExperience stores a new experience in the issue_history table.
+// It saves the error pattern, root cause, solution, and associated embedding vector.
+// The task signature is automatically generated from the first 50 characters of the pattern.
+// Returns an error if the database insert fails.
 func (s *PostgresStore) SaveExperience(ctx context.Context, pattern, cause, solution string, vector []float32) error {
-	// Generate a simple task signature from the first 50 chars of the pattern
+	// Generate a simple task signature from the first 50 characters of the pattern
+	// Use []rune to properly handle multi-byte characters (e.g., Chinese, emoji)
 	signature := pattern
-	if len(signature) > 50 {
-		signature = signature[:50]
+	runes := []rune(signature)
+	if len(runes) > 50 {
+		signature = string(runes[:50])
 	}
 
 	vec := pgvector.NewVector(vector)
@@ -156,7 +161,6 @@ func (s *PostgresStore) SaveExperience(ctx context.Context, pattern, cause, solu
 }
 
 // Close releases the connection pool.
-func (s *PostgresStore) Close() error {
+func (s *PostgresStore) Close() {
 	s.pool.Close()
-	return nil
 }

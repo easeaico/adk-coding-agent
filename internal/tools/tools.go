@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/easeaico/adk-memory-agent/internal/memory"
 	"google.golang.org/adk/tool"
@@ -16,71 +17,78 @@ import (
 )
 
 // Embedder is an interface for generating text embeddings.
+// It abstracts the embedding generation functionality to allow different implementations.
 type Embedder interface {
+	// Embed generates a vector embedding for the given text.
 	Embed(ctx context.Context, text string) ([]float32, error)
 }
 
-// ToolsConfig holds dependencies for creating tools.
+// ToolsConfig holds dependencies and configuration for creating agent tools.
+// All fields are required for proper tool initialization.
 type ToolsConfig struct {
-	Store    memory.Store
-	Embedder Embedder
-	WorkDir  string
+	Store    memory.Store // Database store for memory operations
+	Embedder Embedder     // Embedder for generating query vectors
+	WorkDir  string       // Working directory for file operations (used for path resolution)
 }
 
 // --- Tool Input/Output Structs ---
 
 // SearchPastIssuesArgs is the input for search_past_issues tool.
 type SearchPastIssuesArgs struct {
-	ErrorDescription string `json:"error_description" jsonschema:"description=对错误现象或报错日志的简要描述"`
+	ErrorDescription string `json:"error_description"` // Description of the error or problem to search for
 }
 
 // SearchPastIssuesResult is the output for search_past_issues tool.
 type SearchPastIssuesResult struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
+	Success bool   `json:"success"`         // Whether the operation succeeded
+	Data    any    `json:"data,omitempty"`  // Search results (array of experiences) or message if none found
+	Error   string `json:"error,omitempty"` // Error message if the operation failed
 }
 
 // ReadFileArgs is the input for read_file_content tool.
 type ReadFileArgs struct {
-	Filepath string `json:"filepath" jsonschema:"description=要读取的文件的完整路径"`
+	Filepath string `json:"filepath"` // Path to the file to read (relative to WorkDir or absolute)
 }
 
 // ReadFileResult is the output for read_file_content tool.
 type ReadFileResult struct {
-	Success bool   `json:"success"`
-	Data    string `json:"data,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Success bool   `json:"success"`         // Whether the operation succeeded
+	Data    string `json:"data,omitempty"`  // File contents (truncated if > 10000 bytes)
+	Error   string `json:"error,omitempty"` // Error message if the operation failed
 }
 
 // ListDirectoryArgs is the input for list_directory tool.
 type ListDirectoryArgs struct {
-	Path string `json:"path" jsonschema:"description=要列出内容的目录路径"`
+	Path string `json:"path"` // Directory path to list (relative to WorkDir or absolute, empty for WorkDir)
 }
 
 // ListDirectoryResult is the output for list_directory tool.
 type ListDirectoryResult struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
+	Success bool   `json:"success"`         // Whether the operation succeeded
+	Data    any    `json:"data,omitempty"`  // Array of directory entries with name, isDir, and size
+	Error   string `json:"error,omitempty"` // Error message if the operation failed
 }
 
 // SaveExperienceArgs is the input for save_experience tool.
 type SaveExperienceArgs struct {
-	ErrorPattern string `json:"error_pattern" jsonschema:"description=问题的错误模式或现象描述"`
-	RootCause    string `json:"root_cause" jsonschema:"description=问题的根本原因分析"`
-	Solution     string `json:"solution" jsonschema:"description=解决方案的摘要"`
+	ErrorPattern string `json:"error_pattern"` // Description of the error or problem pattern
+	RootCause    string `json:"root_cause"`    // Root cause analysis of the issue
+	Solution     string `json:"solution"`      // Solution or fix that resolved the issue
 }
 
 // SaveExperienceResult is the output for save_experience tool.
 type SaveExperienceResult struct {
-	Success bool   `json:"success"`
-	Data    string `json:"data,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Success bool   `json:"success"`         // Whether the operation succeeded
+	Data    string `json:"data,omitempty"`  // Success message if the operation succeeded
+	Error   string `json:"error,omitempty"` // Error message if the operation failed
 }
 
 // --- Tool Handlers ---
 
+// createSearchPastIssuesTool creates the search_past_issues tool.
+// This tool allows the agent to search for similar past issues using vector similarity.
+// It generates an embedding for the error description and searches the database
+// for the top 3 most similar experiences.
 func createSearchPastIssuesTool(cfg ToolsConfig) (tool.Tool, error) {
 	handler := func(ctx tool.Context, args SearchPastIssuesArgs) (SearchPastIssuesResult, error) {
 		if args.ErrorDescription == "" {
@@ -104,9 +112,9 @@ func createSearchPastIssuesTool(cfg ToolsConfig) (tool.Tool, error) {
 		}
 
 		// Format results
-		var results []map[string]interface{}
+		var results []map[string]any
 		for _, exp := range experiences {
-			results = append(results, map[string]interface{}{
+			results = append(results, map[string]any{
 				"id":         exp.ID,
 				"pattern":    exp.ErrorPattern,
 				"cause":      exp.RootCause,
@@ -124,6 +132,10 @@ func createSearchPastIssuesTool(cfg ToolsConfig) (tool.Tool, error) {
 	}, handler)
 }
 
+// createReadFileTool creates the read_file_content tool.
+// This tool allows the agent to read file contents from the working directory.
+// It includes security checks to prevent path traversal attacks and limits
+// file content size to prevent excessive memory usage.
 func createReadFileTool(cfg ToolsConfig) (tool.Tool, error) {
 	handler := func(ctx tool.Context, args ReadFileArgs) (ReadFileResult, error) {
 		if args.Filepath == "" {
@@ -143,8 +155,15 @@ func createReadFileTool(cfg ToolsConfig) (tool.Tool, error) {
 			return ReadFileResult{Success: false, Error: fmt.Sprintf("invalid path: %v", err)}, nil
 		}
 
-		absWorkDir, _ := filepath.Abs(cfg.WorkDir)
-		if !strings.HasPrefix(absPath, absWorkDir) {
+		absWorkDir, err := filepath.Abs(cfg.WorkDir)
+		if err != nil {
+			return ReadFileResult{Success: false, Error: fmt.Sprintf("invalid working directory: %v", err)}, nil
+		}
+
+		// Use filepath.Rel to safely check if path is within working directory
+		// This prevents path traversal attacks like "/home/user/work-evil" bypassing "/home/user/work"
+		relPath, err := filepath.Rel(absWorkDir, absPath)
+		if err != nil || strings.HasPrefix(relPath, "..") || filepath.IsAbs(relPath) {
 			return ReadFileResult{Success: false, Error: "access denied: path is outside working directory"}, nil
 		}
 
@@ -157,7 +176,7 @@ func createReadFileTool(cfg ToolsConfig) (tool.Tool, error) {
 		maxSize := 10000
 		contentStr := string(content)
 		if len(contentStr) > maxSize {
-			contentStr = contentStr[:maxSize] + "\n... (truncated)"
+			contentStr = truncateString(contentStr, maxSize) + "\n... (truncated)"
 		}
 
 		return ReadFileResult{Success: true, Data: contentStr}, nil
@@ -169,6 +188,34 @@ func createReadFileTool(cfg ToolsConfig) (tool.Tool, error) {
 	}, handler)
 }
 
+// truncateString truncates a string to the specified byte limit while ensuring
+// the result is valid UTF-8. It avoids cutting multi-byte characters in half.
+func truncateString(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+
+	// If the cut point is a valid rune boundary, we are good.
+	// If not, we need to backtrack.
+	// However, simply iterating runes is safer.
+	if utf8.RuneStart(s[limit]) {
+		return s[:limit]
+	}
+
+	// Backtrack until we find a start byte
+	for i := limit - 1; i >= 0; i-- {
+		if utf8.RuneStart(s[i]) {
+			return s[:i]
+		}
+	}
+
+	return ""
+}
+
+// createListDirectoryTool creates the list_directory tool.
+// This tool allows the agent to list files and directories in the working directory.
+// It includes security checks to prevent path traversal attacks and returns
+// file metadata including name, size, and directory status.
 func createListDirectoryTool(cfg ToolsConfig) (tool.Tool, error) {
 	handler := func(ctx tool.Context, args ListDirectoryArgs) (ListDirectoryResult, error) {
 		dirPath := args.Path
@@ -181,14 +228,21 @@ func createListDirectoryTool(cfg ToolsConfig) (tool.Tool, error) {
 			dirPath = filepath.Join(cfg.WorkDir, dirPath)
 		}
 
-		// Security check
+		// Security check: ensure path is within working directory
 		absPath, err := filepath.Abs(dirPath)
 		if err != nil {
 			return ListDirectoryResult{Success: false, Error: fmt.Sprintf("invalid path: %v", err)}, nil
 		}
 
-		absWorkDir, _ := filepath.Abs(cfg.WorkDir)
-		if !strings.HasPrefix(absPath, absWorkDir) {
+		absWorkDir, err := filepath.Abs(cfg.WorkDir)
+		if err != nil {
+			return ListDirectoryResult{Success: false, Error: fmt.Sprintf("invalid working directory: %v", err)}, nil
+		}
+
+		// Use filepath.Rel to safely check if path is within working directory
+		// This prevents path traversal attacks like "/home/user/work-evil" bypassing "/home/user/work"
+		relPath, err := filepath.Rel(absWorkDir, absPath)
+		if err != nil || strings.HasPrefix(relPath, "..") || filepath.IsAbs(relPath) {
 			return ListDirectoryResult{Success: false, Error: "access denied: path is outside working directory"}, nil
 		}
 
@@ -197,10 +251,10 @@ func createListDirectoryTool(cfg ToolsConfig) (tool.Tool, error) {
 			return ListDirectoryResult{Success: false, Error: fmt.Sprintf("failed to read directory: %v", err)}, nil
 		}
 
-		var items []map[string]interface{}
+		var items []map[string]any
 		for _, entry := range entries {
 			info, _ := entry.Info()
-			item := map[string]interface{}{
+			item := map[string]any{
 				"name":  entry.Name(),
 				"isDir": entry.IsDir(),
 			}
@@ -219,6 +273,10 @@ func createListDirectoryTool(cfg ToolsConfig) (tool.Tool, error) {
 	}, handler)
 }
 
+// createSaveExperienceTool creates the save_experience tool.
+// This tool allows the agent to explicitly save problem-solving experiences
+// to the knowledge base. It generates an embedding for the error pattern
+// and stores the complete experience (pattern, cause, solution) in the database.
 func createSaveExperienceTool(cfg ToolsConfig) (tool.Tool, error) {
 	handler := func(ctx tool.Context, args SaveExperienceArgs) (SaveExperienceResult, error) {
 		if args.ErrorPattern == "" || args.RootCause == "" || args.Solution == "" {

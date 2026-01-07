@@ -10,7 +10,7 @@
 
 ## 技术栈
 
-- Go 1.20+
+- Go 1.25+
 - Google GenAI SDK (Gemini)
 - PostgreSQL + pgvector
 
