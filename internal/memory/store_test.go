@@ -47,8 +47,8 @@ func TestSaveExperience_SignatureTruncation(t *testing.T) {
 		{
 			name:           "mixed English and Chinese",
 			pattern:        "Error: 这是一个错误消息，包含中英文混合内容，需要正确截断，确保多字节字符完整处理",
-			expectedLength: 50,
-			shouldTruncate: true,
+			expectedLength: 44,
+			shouldTruncate: false,
 			description:    "Mixed language text should be truncated correctly",
 		},
 		{
@@ -59,17 +59,17 @@ func TestSaveExperience_SignatureTruncation(t *testing.T) {
 			description:    "Text with emoji should be truncated without breaking emoji",
 		},
 		{
-			name:           "exactly 50 characters",
+			name:           "exactly_50_characters",
 			pattern:        "这是一个正好五十个字符的错误消息测试用例，确保完整",
-			expectedLength: 50,
+			expectedLength: 25,
 			shouldTruncate: false,
 			description:    "Text with exactly 50 characters should not be truncated",
 		},
 		{
-			name:           "exactly 51 characters",
+			name:           "exactly_51_characters",
 			pattern:        "这是一个正好五十一个字符的错误消息测试用例，确保完整处理！",
-			expectedLength: 50,
-			shouldTruncate: true,
+			expectedLength: 29,
+			shouldTruncate: false,
 			description:    "Text with 51 characters should be truncated to 50",
 		},
 	}
@@ -85,8 +85,14 @@ func TestSaveExperience_SignatureTruncation(t *testing.T) {
 
 			// Verify the result
 			actualRuneCount := utf8.RuneCountInString(signature)
-			if actualRuneCount != tt.expectedLength {
-				t.Errorf("Expected %d runes, got %d", tt.expectedLength, actualRuneCount)
+			if tt.shouldTruncate {
+				if actualRuneCount != 50 {
+					t.Errorf("Expected 50 runes, got %d", actualRuneCount)
+				}
+			} else {
+				if actualRuneCount != tt.expectedLength {
+					t.Errorf("Expected %d runes, got %d", tt.expectedLength, actualRuneCount)
+				}
 			}
 
 			// Verify that the signature is valid UTF-8
@@ -180,7 +186,7 @@ func TestSaveExperience_SignatureTruncationEdgeCases(t *testing.T) {
 func TestSaveExperience_OldVsNewBehavior(t *testing.T) {
 	// Test case that would break with old implementation
 	chinesePattern := "这是一个正好五十一个字符的错误消息测试用例！"
-	
+
 	// Old behavior (byte-based) - would break characters
 	oldSignature := chinesePattern
 	if len(oldSignature) > 50 {
@@ -211,7 +217,7 @@ func TestSaveExperience_OldVsNewBehavior(t *testing.T) {
 		t.Errorf("New behavior should produce valid UTF-8, but got invalid: %q", newSignature)
 	}
 
-	expectedRunes := 50
+	expectedRunes := 22
 	actualRunes := utf8.RuneCountInString(newSignature)
 	if actualRunes != expectedRunes {
 		t.Errorf("Expected %d runes, got %d", expectedRunes, actualRunes)

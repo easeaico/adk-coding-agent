@@ -83,6 +83,18 @@ type SaveExperienceResult struct {
 	Error   string `json:"error,omitempty"` // Error message if the operation failed
 }
 
+// ListFilesArgs is the input for list_files tool.
+type ListFilesArgs struct {
+	Path string `json:"path"` // Directory path to list (relative to WorkDir or absolute, empty for WorkDir)
+}
+
+// ListFilesResult is the output for list_files tool.
+type ListFilesResult struct {
+	Success bool   `json:"success"`         // Whether the operation succeeded
+	Data    any    `json:"data,omitempty"`  // Array of directory entries with name, isDir, and size
+	Error   string `json:"error,omitempty"` // Error message if the operation failed
+}
+
 // --- Tool Handlers ---
 
 // createSearchPastIssuesTool creates the search_past_issues tool.
@@ -273,6 +285,63 @@ func createListDirectoryTool(cfg ToolsConfig) (tool.Tool, error) {
 	}, handler)
 }
 
+func createListFilesTool(cfg ToolsConfig) (tool.Tool, error) {
+	handler := func(ctx tool.Context, args ListFilesArgs) (ListFilesResult, error) {
+		dirPath := args.Path
+		if dirPath == "" {
+			dirPath = cfg.WorkDir
+		}
+
+		// Resolve relative paths
+		if !filepath.IsAbs(dirPath) {
+			dirPath = filepath.Join(cfg.WorkDir, dirPath)
+		}
+
+		// Security check: ensure path is within working directory
+		absPath, err := filepath.Abs(dirPath)
+		if err != nil {
+			return ListFilesResult{Success: false, Error: fmt.Sprintf("invalid path: %v", err)}, nil
+		}
+
+		absWorkDir, err := filepath.Abs(cfg.WorkDir)
+		if err != nil {
+			return ListFilesResult{Success: false, Error: fmt.Sprintf("invalid working directory: %v", err)}, nil
+		}
+
+		// Use filepath.Rel to safely check if path is within working directory
+		// This prevents path traversal attacks like "/home/user/work-evil" bypassing "/home/user/work"
+		relPath, err := filepath.Rel(absWorkDir, absPath)
+		if err != nil || strings.HasPrefix(relPath, "..") || filepath.IsAbs(relPath) {
+			return ListFilesResult{Success: false, Error: "access denied: path is outside working directory"}, nil
+		}
+
+		entries, err := os.ReadDir(absPath)
+		if err != nil {
+			return ListFilesResult{Success: false, Error: fmt.Sprintf("failed to read directory: %v", err)}, nil
+		}
+
+		var items []map[string]any
+		for _, entry := range entries {
+			info, _ := entry.Info()
+			item := map[string]any{
+				"name":  entry.Name(),
+				"isDir": entry.IsDir(),
+			}
+			if info != nil {
+				item["size"] = info.Size()
+			}
+			items = append(items, item)
+		}
+
+		return ListFilesResult{Success: true, Data: items}, nil
+	}
+
+	return functiontool.New(functiontool.Config{
+		Name:        "list_files",
+		Description: "列出指定目录下的文件和子目录。用于探索项目结构。",
+	}, handler)
+}
+
 // createSaveExperienceTool creates the save_experience tool.
 // This tool allows the agent to explicitly save problem-solving experiences
 // to the knowledge base. It generates an embedding for the error pattern
@@ -324,6 +393,12 @@ func BuildTools(cfg ToolsConfig) ([]tool.Tool, error) {
 		return nil, fmt.Errorf("failed to create list_directory tool: %w", err)
 	}
 	tools = append(tools, listDirTool)
+
+	listFilesTool, err := createListFilesTool(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create list_files tool: %w", err)
+	}
+	tools = append(tools, listFilesTool)
 
 	saveExpTool, err := createSaveExperienceTool(cfg)
 	if err != nil {

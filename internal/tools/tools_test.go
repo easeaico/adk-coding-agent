@@ -165,3 +165,37 @@ func TestTruncateString(t *testing.T) {
 		t.Errorf("Truncated string length %d exceeds limit %d", len(truncated), limit)
 	}
 }
+
+func TestListFilesTool(t *testing.T) {
+	// Setup temporary directory structure
+	tmpDir, err := os.MkdirTemp("", "agent_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	// Create a working directory inside
+	workDir := filepath.Join(tmpDir, "work")
+	if err := os.Mkdir(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := ToolsConfig{
+		Store:    &MockStore{},
+		Embedder: &MockEmbedder{},
+		WorkDir:  workDir,
+	}
+
+	// Create the tool
+	tool, err := createListFilesTool(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create tool: %v", err)
+	}
+
+	// Test reading a file within the working directory
+	// Note: This would require calling the tool handler, which needs tool.Context
+	// For now, we just verify the tool was created successfully
+	if tool == nil {
+		t.Error("Tool should not be nil")
+	}
+}

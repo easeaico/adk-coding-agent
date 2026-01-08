@@ -57,6 +57,10 @@ type Service struct {
 
 // NewService creates a new memory service with the given store and embedder.
 func NewService(ctx context.Context, store Store, cfg config.Config) (*Service, error) {
+	if cfg.APIKey == "" {
+		return nil, fmt.Errorf("failed to create GenAI client: API key is required")
+	}
+
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  cfg.APIKey,
 		Backend: genai.BackendGeminiAPI,
