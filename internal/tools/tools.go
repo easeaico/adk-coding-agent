@@ -285,6 +285,10 @@ func createListDirectoryTool(cfg ToolsConfig) (tool.Tool, error) {
 	}, handler)
 }
 
+// createListFilesTool creates the list_files tool.
+// This tool is similar to list_directory and allows the agent to list files and directories
+// in the working directory. It includes security checks to prevent path traversal attacks
+// and returns file metadata including name, size, and directory status.
 func createListFilesTool(cfg ToolsConfig) (tool.Tool, error) {
 	handler := func(ctx tool.Context, args ListFilesArgs) (ListFilesResult, error) {
 		dirPath := args.Path

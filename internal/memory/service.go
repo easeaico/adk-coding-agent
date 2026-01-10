@@ -14,26 +14,33 @@ import (
 	adkmemory "google.golang.org/adk/memory"
 	"google.golang.org/adk/session"
 	"google.golang.org/genai"
-
-	"github.com/easeaico/adk-memory-agent/internal/config"
 )
 
-// Embedder wraps the genai client for generating text embeddings.
-// It uses Google's text-embedding-004 model to convert text into vector
-// representations for similarity search.
-type Embedder struct {
+// embedderImpl is the concrete implementation of the Embedder interface.
+// It wraps the genai client for generating text embeddings using Google's
+// text-embedding-004 model to convert text into vector representations for similarity search.
+type embedderImpl struct {
 	client *genai.Client
 }
 
-// NewEmbedder creates a new Embedder with the given GenAI client.
-func NewEmbedder(client *genai.Client) *Embedder {
-	return &Embedder{client: client}
+// NewEmbedder creates a new Embedder implementation with the given GenAI client configuration.
+// It returns the Embedder interface, allowing for easier testing with mock implementations.
+func NewEmbedder(ctx context.Context, apiKey string) (Embedder, error) {
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GenAI client: %w", err)
+	}
+
+	return &embedderImpl{client: client}, nil
 }
 
 // Embed generates a vector embedding for the given text using the text-embedding-004 model.
 // The returned vector can be used for similarity search in the vector database.
 // Returns an error if the embedding generation fails.
-func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
+func (e *embedderImpl) Embed(ctx context.Context, text string) ([]float32, error) {
 	resp, err := e.client.Models.EmbedContent(ctx, "text-embedding-004", genai.Text(text), nil)
 	if err != nil {
 		return nil, err
@@ -41,42 +48,29 @@ func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	return resp.Embeddings[0].Values, nil
 }
 
-// EmbedderInterface defines the interface for embedding generation.
+// Embedder defines the interface for embedding generation.
 // This allows for easier testing by using mock implementations.
-type EmbedderInterface interface {
+type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
 }
 
-// Service implements ADK's memory.Service interface, providing vector similarity search
+// service implements ADK's memory.Service interface, providing vector similarity search
 // and session ingestion capabilities for the agent's long-term memory.
 // It combines a Store for database operations and an Embedder for text-to-vector conversion.
-type Service struct {
-	store    Store             // Database store for memory operations
-	embedder EmbedderInterface // Embedder for generating query vectors in Search and AddSession
+type serviceImpl struct {
+	store    Store    // Database store for memory operations
+	embedder Embedder // Embedder for generating query vectors in Search and AddSession
 }
 
 // NewService creates a new memory service with the given store and embedder.
-func NewService(ctx context.Context, store Store, cfg config.Config) (*Service, error) {
-	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("failed to create GenAI client: API key is required")
-	}
-
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  cfg.APIKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create GenAI client: %w", err)
-	}
-
-	embedder := NewEmbedder(client)
-	return &Service{store: store, embedder: embedder}, nil
+func NewService(embedder Embedder, store Store) adkmemory.Service {
+	return &serviceImpl{store: store, embedder: embedder}
 }
 
 // AddSession implements memory.Service interface.
 // It extracts relevant information from the session and stores it as experiences.
 // According to ADK docs, this should ingest session contents into long-term knowledge.
-func (s *Service) AddSession(ctx context.Context, sess session.Session) error {
+func (s *serviceImpl) AddSession(ctx context.Context, sess session.Session) error {
 	events := sess.Events()
 
 	// Extract user questions and agent responses from the session
@@ -101,8 +95,8 @@ func (s *Service) AddSession(ctx context.Context, sess session.Session) error {
 			}
 		}
 
-		// Check if this event contains function calls that might be save_experience
-		// We check the content parts for function call indicators
+		// Check if this event contains a function call to save_experience
+		// If found, we skip automatic ingestion to avoid duplicates
 		if event.Content != nil {
 			for _, part := range event.Content.Parts {
 				if part.FunctionCall != nil && part.FunctionCall.Name == "save_experience" {
@@ -127,7 +121,7 @@ func (s *Service) AddSession(ctx context.Context, sess session.Session) error {
 		}
 
 		// Save as experience
-		// Use user query as pattern, agent response as solution
+		// Use user query as error_pattern, empty string as root_cause, agent response as solution
 		err = s.store.SaveExperience(ctx, userQuery, "", agentResponse, queryVector)
 		if err != nil {
 			return fmt.Errorf("failed to save session to memory: %w", err)
@@ -139,7 +133,7 @@ func (s *Service) AddSession(ctx context.Context, sess session.Session) error {
 
 // Search implements memory.Service interface.
 // It performs a vector similarity search based on the query and returns memory entries.
-func (s *Service) Search(ctx context.Context, req *adkmemory.SearchRequest) (*adkmemory.SearchResponse, error) {
+func (s *serviceImpl) Search(ctx context.Context, req *adkmemory.SearchRequest) (*adkmemory.SearchResponse, error) {
 	// Generate embedding for the query
 	queryVector, err := s.embedder.Embed(ctx, req.Query)
 	if err != nil {

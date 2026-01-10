@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/easeaico/adk-memory-agent/internal/config"
 	adkmemory "google.golang.org/adk/memory"
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/session"
@@ -59,7 +58,7 @@ func (m *mockStore) SaveExperience(ctx context.Context, pattern, cause, solution
 func (m *mockStore) Close() {
 }
 
-// mockEmbedder is a mock implementation of EmbedderInterface for testing
+// mockEmbedder is a mock implementation of Embedder for testing
 type mockEmbedder struct {
 	embedError error
 	embedValue []float32
@@ -76,9 +75,9 @@ func (m *mockEmbedder) Embed(ctx context.Context, text string) ([]float32, error
 	return []float32{0.1, 0.2, 0.3}, nil
 }
 
-// newTestService creates a Service for testing with a mock embedder
-func newTestService(store Store, mockEmbed EmbedderInterface) *Service {
-	return &Service{
+// newTestService creates a serviceImpl for testing with a mock embedder
+func newTestService(store Store, mockEmbed Embedder) *serviceImpl {
+	return &serviceImpl{
 		store:    store,
 		embedder: mockEmbed,
 	}
@@ -712,64 +711,37 @@ func TestService_Search(t *testing.T) {
 }
 
 func TestNewService(t *testing.T) {
-	ctx := context.Background()
-
 	tests := []struct {
-		name         string
-		store        Store
-		cfg          config.Config
-		wantError    bool
-		wantErrorMsg string
+		name     string
+		embedder Embedder
+		store    Store
 	}{
 		{
-			name:  "successful creation",
-			store: &mockStore{},
-			cfg: config.Config{
-				APIKey: "test-api-key",
-			},
-			wantError: false,
-		},
-		{
-			name:  "error when GenAI client creation fails",
-			store: &mockStore{},
-			cfg: config.Config{
-				APIKey: "", // Empty API key might cause error
-			},
-			wantError:    true,
-			wantErrorMsg: "failed to create GenAI client",
+			name:     "successful creation",
+			embedder:  &mockEmbedder{},
+			store:     &mockStore{},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			service, err := NewService(ctx, tt.store, tt.cfg)
+			service := NewService(tt.embedder, tt.store)
 
-			if tt.wantError {
-				if err == nil {
-					t.Errorf("Expected error, got nil")
-					return
-				}
-				if tt.wantErrorMsg != "" && !contains(err.Error(), tt.wantErrorMsg) {
-					t.Errorf("Expected error message to contain %q, got %q", tt.wantErrorMsg, err.Error())
-				}
-				if service != nil {
-					t.Error("Expected service to be nil on error")
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Unexpected error: %v", err)
-					return
-				}
-				if service == nil {
-					t.Error("Expected service, got nil")
-					return
-				}
-				if service.store != tt.store {
-					t.Error("Service store not set correctly")
-				}
-				if service.embedder == nil {
-					t.Error("Service embedder not initialized")
-				}
+			if service == nil {
+				t.Error("Expected service, got nil")
+				return
+			}
+			// Type assert to access concrete type fields
+			svc, ok := service.(*serviceImpl)
+			if !ok {
+				t.Error("Expected *serviceImpl type, got different type")
+				return
+			}
+			if svc.store != tt.store {
+				t.Error("Service store not set correctly")
+			}
+			if svc.embedder == nil {
+				t.Error("Service embedder not initialized")
 			}
 		})
 	}

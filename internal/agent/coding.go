@@ -19,8 +19,8 @@ import (
 
 // NewCodingAgent creates and initializes a new coding agent with all required components.
 // It loads project rules, creates tools, initializes the LLM model, and configures
-// the agent with a system prompt. Returns the agent, a cleanup function, and an error.
-func NewCodingAgent(ctx context.Context, store memory.Store, cfg config.Config) (agent.Agent, error) {
+// the agent with a system prompt. Returns the agent and an error.
+func NewCodingAgent(ctx context.Context, embedder memory.Embedder, store memory.Store, cfg *config.Config) (agent.Agent, error) {
 	// Load project rules for system prompt
 	rules, err := store.GetProjectRules(ctx)
 	if err != nil {
@@ -29,18 +29,6 @@ func NewCodingAgent(ctx context.Context, store memory.Store, cfg config.Config) 
 
 	// Build system instruction
 	systemPrompt := buildSystemPrompt(rules)
-
-	// Create GenAI client for embedder
-	genaiClient, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  cfg.APIKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create GenAI client: %w", err)
-	}
-
-	// Create embedder for tools
-	embedder := memory.NewEmbedder(genaiClient)
 
 	// Create tools
 	agentTools, err := tools.BuildTools(tools.ToolsConfig{
@@ -53,7 +41,7 @@ func NewCodingAgent(ctx context.Context, store memory.Store, cfg config.Config) 
 	}
 
 	// Create LLM model using ADK's gemini wrapper
-	llmModel, err := gemini.NewModel(ctx, "gemini-3-pro", &genai.ClientConfig{
+	llmModel, err := gemini.NewModel(ctx, "gemini-3-pro-preview", &genai.ClientConfig{
 		APIKey:  cfg.APIKey,
 		Backend: genai.BackendGeminiAPI,
 	})

@@ -134,10 +134,11 @@ func (s *PostgresStore) SearchSimilarIssues(ctx context.Context, queryVector []f
 
 // SaveExperience stores a new experience in the issue_history table.
 // It saves the error pattern, root cause, solution, and associated embedding vector.
-// The task signature is automatically generated from the first 50 characters of the pattern.
+// The task signature is automatically generated from the first 50 runes (characters) of the pattern,
+// using []rune to properly handle multi-byte characters (e.g., Chinese, emoji).
 // Returns an error if the database insert fails.
 func (s *PostgresStore) SaveExperience(ctx context.Context, pattern, cause, solution string, vector []float32) error {
-	// Generate a simple task signature from the first 50 characters of the pattern
+	// Generate a simple task signature from the first 50 runes of the pattern
 	// Use []rune to properly handle multi-byte characters (e.g., Chinese, emoji)
 	signature := pattern
 	runes := []rune(signature)
