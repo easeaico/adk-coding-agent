@@ -11,7 +11,7 @@
 ## 技术栈
 
 - Go 1.25+
-- Google GenAI SDK (Gemini)
+- Google Agent SDK
 - PostgreSQL + pgvector
 
 ## 快速开始
