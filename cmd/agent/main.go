@@ -55,7 +55,7 @@ func main() {
 	memoryService := memory.NewService(embedder, store)
 
 	// 初始化Agent
-	llmAgent, err := internal.NewCodingAgent(ctx, embedder, store, &cfg)
+	llmAgent, err := internal.NewHunterAgent(ctx, embedder, store, &cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize agent: %v", err)
 	}

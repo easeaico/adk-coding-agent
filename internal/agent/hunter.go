@@ -17,10 +17,10 @@ import (
 	"google.golang.org/genai"
 )
 
-// NewCodingAgent creates and initializes a new coding agent with all required components.
+// NewHunterAgent creates and initializes a new coding agent with all required components.
 // It loads project rules, creates tools, initializes the LLM model, and configures
 // the agent with a system prompt. Returns the agent and an error.
-func NewCodingAgent(ctx context.Context, embedder memory.Embedder, store memory.Store, cfg *config.Config) (agent.Agent, error) {
+func NewHunterAgent(ctx context.Context, embedder memory.Embedder, store memory.Store, cfg *config.Config) (agent.Agent, error) {
 	// Load project rules for system prompt
 	rules, err := store.GetProjectRules(ctx)
 	if err != nil {
