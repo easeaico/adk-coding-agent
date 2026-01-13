@@ -22,7 +22,7 @@ The core philosophy is to augment the developer's capabilities with three types 
 ## Directory Structure
 
 *   `cmd/agent/`: Main application entry point (`main.go`). Initializes the database, memory service, and launches the agent.
-*   `internal/agent/`: Agent logic (`agent.go`). Configures the system prompt and initializes the Gemini model.
+*   `internal/agent/`: Agent logic (`hunter.go`). Configures the system prompt and initializes the Gemini model.
 *   `internal/config/`: Configuration loading from environment variables.
 *   `internal/memory/`:
     *   `store.go`: PostgreSQL storage implementation for project rules and issue history.

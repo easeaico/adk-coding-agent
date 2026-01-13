@@ -126,6 +126,11 @@ func createSearchPastIssuesTool(cfg ToolsConfig) (tool.Tool, error) {
 		// Format results
 		var results []map[string]any
 		for _, exp := range experiences {
+			// similarity must big than 75%
+			if exp.SimilarityScore < 0.75 {
+				continue
+			}
+
 			results = append(results, map[string]any{
 				"id":         exp.ID,
 				"pattern":    exp.ErrorPattern,

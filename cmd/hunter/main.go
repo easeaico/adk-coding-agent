@@ -51,7 +51,7 @@ func main() {
 		log.Fatalf("failed to create embedder service: %v", err)
 	}
 
-	// 创建内存服务
+	// 创建记忆服务
 	memoryService := memory.NewService(embedder, store)
 
 	// 初始化Agent
