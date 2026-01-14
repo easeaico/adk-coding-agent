@@ -61,14 +61,14 @@ export WORK_DIR="/path/to/your/project"  # 可选，默认为当前目录
 ### 3. 运行
 
 ```bash
-go run ./cmd/agent
+go run ./cmd/hunter
 ```
 
 ## 项目结构
 
 ```
 .
-├── cmd/agent/          # 主程序入口
+├── cmd/hunter/         # 主程序入口
 ├── internal/
 │   ├── memory/         # 数据库与向量操作
 │   ├── tools/          # ADK 工具定义
@@ -88,6 +88,10 @@ go run ./cmd/agent
 根据历史记录（Issue #42），这通常是因为在 Handler 中使用了全局 Map。
 建议使用 `sync.Map` 或加锁。请检查以下代码...
 ```
+
+## 演示视频
+
+[![遗留代码助手｜给 AI 装上“海马体”，拯救屎山代码](https://img.youtube.com/vi/PBYDfYj7Uwo/0.jpg)](https://www.youtube.com/watch?v=PBYDfYj7Uwo)
 
 ## 许可证
 
