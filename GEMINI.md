@@ -6,7 +6,7 @@
 
 The core philosophy is to augment the developer's capabilities with three types of memory:
 *   **Semantic Memory:** Enforces project-specific rules and coding standards (e.g., "always use `sync.Map` for concurrent access").
-*   **Episodic Memory:** Recalls past debugging experiences and solutions using Retrieval-Augmented Generation (RAG) powered by PostgreSQL and `pgvector`.
+*   **Episodic Memory:** Recalls past debugging experiences and solutions using Retrieval-Augmented Generation (RAG) powered by PostgreSQL/pgvector or SQLite.
 *   **Procedural Memory:** Utilizes a set of tools to actively investigate the codebase and interact with the knowledge base.
 
 ## Technical Architecture
@@ -14,10 +14,11 @@ The core philosophy is to augment the developer's capabilities with three types 
 *   **Language:** Go 1.25+
 *   **AI Model:** Gemini 1.5 Pro (via `google.golang.org/genai`)
 *   **Framework:** Google Go ADK (`google.golang.org/adk`)
-*   **Database:** PostgreSQL with `pgvector` extension for vector similarity search.
+*   **Database:** PostgreSQL with `pgvector` extension, or SQLite with in-memory vector search.
 *   **Key Dependencies:**
     *   `github.com/jackc/pgx/v5`: PostgreSQL driver.
     *   `github.com/pgvector/pgvector-go`: Vector operations for Go.
+    *   `modernc.org/sqlite`: Pure Go SQLite driver (no CGO required).
 
 ## Directory Structure
 
@@ -26,36 +27,55 @@ The core philosophy is to augment the developer's capabilities with three types 
 *   `internal/config/`: Configuration loading from environment variables.
 *   `internal/memory/`:
     *   `store.go`: PostgreSQL storage implementation for project rules and issue history.
+    *   `sqlite_store.go`: SQLite storage implementation with in-memory vector similarity search.
     *   `service.go`: Memory service logic for RAG and session management.
     *   `types.go`: Domain models (`ProjectRule`, `Experience`).
 *   `internal/tools/`: Definition of tools available to the agent (`tools.go`).
-*   `migrations/`: SQL scripts for database schema setup (`001_init.sql`).
+*   `migrations/`: SQL scripts for database schema setup (`001_init.sql` for PostgreSQL, `002_sqlite_init.sql` for SQLite).
 
 ## Building and Running
 
 ### Prerequisites
 
 1.  **Go 1.25+** installed.
-2.  **PostgreSQL** installed with the `vector` extension enabled.
-    ```sql
-    CREATE EXTENSION IF NOT EXISTS vector;
-    ```
+2.  **Database (choose one):**
+    *   **PostgreSQL** with the `vector` extension enabled:
+        ```sql
+        CREATE EXTENSION IF NOT EXISTS vector;
+        ```
+    *   **SQLite** (no additional setup required - pure Go implementation).
 
 ### Setup
 
 1.  **Database Migration:**
-    Apply the schema to your PostgreSQL database:
-    ```bash
-    psql -d <your_dbname> -f migrations/001_init.sql
-    ```
+    
+    *   **For PostgreSQL:**
+        ```bash
+        psql -d <your_dbname> -f migrations/001_init.sql
+        ```
+    
+    *   **For SQLite:**
+        ```bash
+        sqlite3 data.db < migrations/002_sqlite_init.sql
+        ```
 
 2.  **Environment Variables:**
-    Set the following environment variables:
-    ```bash
-    export GOOGLE_API_KEY="your-gemini-api-key"
-    export DATABASE_URL="postgres://user:password@localhost:5432/dbname"
-    export WORK_DIR="/absolute/path/to/project/root" # Optional, defaults to current directory
-    ```
+    
+    *   **For PostgreSQL (default):**
+        ```bash
+        export GOOGLE_API_KEY="your-gemini-api-key"
+        export DB_TYPE="postgres"  # Optional, this is the default
+        export DATABASE_URL="postgres://user:password@localhost:5432/dbname"
+        export WORK_DIR="/absolute/path/to/project/root" # Optional, defaults to current directory
+        ```
+    
+    *   **For SQLite:**
+        ```bash
+        export GOOGLE_API_KEY="your-gemini-api-key"
+        export DB_TYPE="sqlite"
+        export DATABASE_URL="./data.db"
+        export WORK_DIR="/absolute/path/to/project/root" # Optional, defaults to current directory
+        ```
 
 ### Execution
 
@@ -94,6 +114,6 @@ The agent is equipped with the following tools (defined in `internal/tools/tools
 
 ## Development Conventions
 
-*   **Database Schema:** The `project_rules` table stores static guidelines (Style, Security, Architecture). The `issue_history` table stores dynamic problem-solving records with 768-dimensional embeddings.
+*   **Database Schema:** The `project_rules` table stores static guidelines (Style, Security, Architecture). The `issue_history` table stores dynamic problem-solving records with 768-dimensional embeddings. For SQLite, embeddings are stored as BLOB and similarity search is performed in application memory.
 *   **Security:** File access tools include strict checks to prevent path traversal outside the configured `WORK_DIR`.
 *   **System Prompt:** The agent's system prompt is dynamically built to include active project rules from the database.

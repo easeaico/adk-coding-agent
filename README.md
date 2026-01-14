@@ -12,11 +12,13 @@
 
 - Go 1.25+
 - Google Agent SDK
-- PostgreSQL + pgvector
+- PostgreSQL + pgvector 或 SQLite（纯 Go，无 CGO 依赖）
 
 ## 快速开始
 
 ### 1. 环境准备
+
+**方式 A: 使用 PostgreSQL（推荐用于生产环境）**
 
 确保已安装 PostgreSQL 并启用 pgvector 扩展：
 
@@ -30,11 +32,29 @@ CREATE EXTENSION IF NOT EXISTS vector;
 psql -d your_database -f migrations/001_init.sql
 ```
 
-### 2. 配置环境变量
+**方式 B: 使用 SQLite（推荐用于开发/单机使用）**
+
+无需额外安装，执行数据库迁移：
 
 ```bash
+sqlite3 data.db < migrations/002_sqlite_init.sql
+```
+
+### 2. 配置环境变量
+
+**PostgreSQL 配置：**
+```bash
 export GOOGLE_API_KEY="your-api-key"
+export DB_TYPE="postgres"  # 可选，默认值
 export DATABASE_URL="postgres://user:password@localhost:5432/dbname"
+export WORK_DIR="/path/to/your/project"  # 可选，默认为当前目录
+```
+
+**SQLite 配置：**
+```bash
+export GOOGLE_API_KEY="your-api-key"
+export DB_TYPE="sqlite"
+export DATABASE_URL="./data.db"
 export WORK_DIR="/path/to/your/project"  # 可选，默认为当前目录
 ```
 

@@ -38,10 +38,27 @@ func main() {
 		os.Exit(0)
 	}()
 
-	// 初始化数据库连接
-	store, err := memory.NewPostgresStore(ctx, cfg.DatabaseURL)
-	if err != nil {
-		log.Fatalf("failed to connect to database: %v", err)
+	// 初始化数据库连接，根据配置选择 PostgreSQL 或 SQLite
+	var store memory.Store
+	switch cfg.DBType {
+	case "sqlite":
+		sqliteStore, err := memory.NewSQLiteStore(ctx, cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("failed to connect to SQLite database: %v", err)
+		}
+		// 初始化 schema（如果表不存在）
+		if err := sqliteStore.InitSchema(ctx); err != nil {
+			log.Fatalf("failed to initialize SQLite schema: %v", err)
+		}
+		store = sqliteStore
+		log.Printf("Using SQLite database: %s", cfg.DatabaseURL)
+	default: // "postgres"
+		pgStore, err := memory.NewPostgresStore(ctx, cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("failed to connect to PostgreSQL database: %v", err)
+		}
+		store = pgStore
+		log.Printf("Using PostgreSQL database")
 	}
 	defer store.Close()
 

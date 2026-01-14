@@ -4,7 +4,7 @@ This file documents the `adk-coding-agent` repository for AI agents. It provides
 
 ## 1. Project Overview
 
-**Legacy Code Hunter** is a Go-based intelligent coding assistant built with the Google Go ADK (`google.golang.org/adk`). It uses a tiered memory system (Semantic, Episodic, Procedural) backed by PostgreSQL and `pgvector` to help developers understand and debug legacy code.
+**Legacy Code Hunter** is a Go-based intelligent coding assistant built with the Google Go ADK (`google.golang.org/adk`). It uses a tiered memory system (Semantic, Episodic, Procedural) backed by PostgreSQL/pgvector or SQLite to help developers understand and debug legacy code.
 
 - **Main Agent Logic**: `internal/agent/hunter.go` (renamed from `agent.go`)
 - **Memory Logic**: `internal/memory/`
@@ -23,8 +23,14 @@ This file documents the `adk-coding-agent` repository for AI agents. It provides
 - **Run Memory Tests**: `go test -v ./internal/memory/...`
 
 ### Database Setup
+
+**PostgreSQL (default):**
 - **Migrations**: `psql -d <dbname> -f migrations/001_init.sql`
 - **Extensions**: Requires `pgvector` extension in PostgreSQL.
+
+**SQLite (alternative):**
+- **Migrations**: `sqlite3 data.db < migrations/002_sqlite_init.sql`
+- **No extensions required**: Vector search is performed in application memory.
 
 ## 3. Directory Structure & Key Files
 
@@ -41,11 +47,13 @@ This file documents the `adk-coding-agent` repository for AI agents. It provides
 │   ├── memory/
 │   │   ├── service.go        # Memory service implementation
 │   │   ├── store.go          # PostgreSQL + pgvector storage
+│   │   ├── sqlite_store.go   # SQLite storage (in-memory vector search)
 │   │   └── types.go          # Domain models (Experience, ProjectRule)
 │   └── tools/
 │       └── tools.go          # Tool definitions (Search, Read, List, Save)
 ├── migrations/
-│   └── 001_init.sql          # DB Schema (project_rules, issue_history)
+│   ├── 001_init.sql          # PostgreSQL schema (project_rules, issue_history)
+│   └── 002_sqlite_init.sql   # SQLite schema (same tables, no pgvector)
 ├── AGENTS.md                 # This file
 └── go.mod                    # Dependencies (Go 1.25+)
 ```
@@ -55,9 +63,9 @@ This file documents the `adk-coding-agent` repository for AI agents. It provides
 - **Language**: Go 1.25+
 - **Error Handling**: Wrap errors with `fmt.Errorf("...: %w", err)`.
 - **Database**:
-    - Use `pgx/v5` driver.
-    - Use parameterized queries (`$1`, `$2`) for security.
-    - `pgvector` for embedding storage and similarity search.
+    - PostgreSQL: Use `pgx/v5` driver with `pgvector` for vector similarity search.
+    - SQLite: Use `modernc.org/sqlite` (pure Go, no CGO) with in-memory cosine similarity.
+    - Use parameterized queries (`$1`, `$2` for PostgreSQL; `?` for SQLite).
 - **Tools**:
     - Defined in `internal/tools/tools.go`.
     - Must implement `google.golang.org/adk/tool` interface.
@@ -72,7 +80,10 @@ This file documents the `adk-coding-agent` repository for AI agents. It provides
 ## 5. Configuration (Env Vars)
 
 - `GOOGLE_API_KEY`: Required for Gemini API.
-- `DATABASE_URL`: Postgres connection string (e.g., `postgres://user:pass@localhost:5432/dbname`).
+- `DB_TYPE`: Database type, either `postgres` (default) or `sqlite`.
+- `DATABASE_URL`: 
+    - PostgreSQL: Connection string (e.g., `postgres://user:pass@localhost:5432/dbname`).
+    - SQLite: File path (e.g., `./data.db` or `/path/to/database.db`).
 - `WORK_DIR`: Root directory for file operations (defaults to CWD).
 
 ## 6. Development Tips
