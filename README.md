@@ -8,6 +8,10 @@
 - **情景记忆**: 使用向量数据库存储历史问题和解决方案，支持 RAG 检索
 - **程序性记忆**: 通过工具调用读取代码、搜索历史、保存经验
 
+## 演示视频
+
+[![遗留代码助手｜给 AI 装上“海马体”，拯救屎山代码](https://img.youtube.com/vi/PBYDfYj7Uwo/0.jpg)](https://www.youtube.com/watch?v=PBYDfYj7Uwo)
+
 ## 技术栈
 
 - Go 1.25+
@@ -69,9 +73,6 @@ go run ./cmd/hunter
 建议使用 `sync.Map` 或加锁。请检查以下代码...
 ```
 
-## 演示视频
-
-[![遗留代码助手｜给 AI 装上“海马体”，拯救屎山代码](https://img.youtube.com/vi/PBYDfYj7Uwo/0.jpg)](https://www.youtube.com/watch?v=PBYDfYj7Uwo)
 
 ## 许可证
 
